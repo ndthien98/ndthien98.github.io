@@ -60,10 +60,10 @@ const getFormatUsedProfile = usedProfile => {
   }
 }
 
-const checkDocx = async (variant, path) => {
+const checkDocx = async (variant, templateFilePath) => {
   if (variant === "docx") {
     try {
-      await documentMaker.docxtemplater({}, { path })
+      await documentMaker.docxtemplater({}, { path: templateFilePath })
       return true
     } catch (docxErr) {
       return false
@@ -92,8 +92,7 @@ const createPDF = async (
   filename,
   folderPath,
   pdfPath,
-  hasTemplateFile,
-  defaultUploadFolder
+  hasTemplateFile
 ) => {
   let documentFile, invoiceFile
   if (canCreatePDF) {
@@ -171,8 +170,7 @@ module.exports.makeInvoiceFile = async function makeInvoiceFile(payload) {
       filename,
       folderPath,
       pdfPath,
-      hasTemplateFile,
-      defaultUploadFolder
+      hasTemplateFile
     )
     documentFile = createPDFresult.documentFile
     invoiceFile = createPDFresult.invoiceFile
@@ -235,7 +233,6 @@ module.exports.makeInvoiceFile = async function makeInvoiceFile(payload) {
         values.currency = _.get(payload, ["data", "currency"], "EUR")
         values.contactPerson = _.assign({}, _.get(payload, ["data", "contactPerson"]))
         values.format = getFormatUsedProfile(usedProfile)
-
         values.buyerReference = _.get(payload, ["data", "buyerReference"])
         values.contractReferencedDocument = _.get(payload, ["data", "contractReferencedDocument"])
         values.invoiceReferencedDocument = _.get(payload, ["data", "invoiceReferencedDocument"])
