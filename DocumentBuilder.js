@@ -80,15 +80,18 @@ const getUpload = ($recreate, prefix, id, createdAt) => {
   } else return null
 }
 
-const getTemplateFilePath = (invoiceTemplateFile, defaultUploadFolder) => {
+const getReceiver = payload => _.get(payload, "$receiver") || _.get(payload, ["owner", "id"])
+
+const checkHasTemplateFile = templateFilePath => templateFilePath && fse.lstatSync(templateFilePath).isFile() && fse.existsSync(templateFilePath)
+
+const getTemplateFilePath = (invoiceTemplateFile) => {
   return _.isString(invoiceTemplateFile) ? path.join(defaultUploadFolder, "filestorage", invoiceTemplateFile) : null
 }
 
 const createPDF = async (
   canCreatePDF,
   payload,
-  fixingReferenceId,
-  fixingReferenceType,
+  fixing,
   filename,
   folderPath,
   pdfPath,
@@ -96,7 +99,7 @@ const createPDF = async (
 ) => {
   let documentFile, invoiceFile
   if (canCreatePDF) {
-    documentFile = await generateDocumentPDF(payload, { fixingReferenceId, fixingReferenceType })
+    documentFile = await generateDocumentPDF(payload, { ...fixing })
     invoiceFile = { filename, path: folderPath, fullPath: pdfPath }
 
     fse.writeFileSync(
@@ -117,10 +120,41 @@ const createPDF = async (
   }
 }
 
+const generateZF1ExtendedPDF = (canCreatePDF, payload, pdfPath) =>{
+  if (canCreatePDF) {
+    // generate some needed data for XML create process (collect product taxes, discount etc.)
+    const calculateAmount = faktooraUtilities.calculateAmount(
+      _.get(payload, ["data", "invoicePositions"]),
+      _.get(payload, ["data", "totaldiscount", "value"]),
+      _.get(payload, ["data", "deduction"]),
+      _.get(payload, ["data", "subTotalsDefinitions"])
+    )
+
+    // generate the XML data then write to file
+    const zugxml = await faktooraUtilities.generateZF1XmlInvoice(payload, calculateAmount)
+
+    fse.writeFileSync(ZUGFeRDInvoicePath, zugxml)
+
+    // generate PDF/A3 with included XML data
+    const outputFile = `${pdfPath}.tmp`
+    await exec(
+      `gs -dPDFA=3 -dBATCH -dNOPAUSE -dNOSAFER -sColorConversionStrategy=sRGB -sDEVICE=pdfwrite -sOutputFile=${outputFile} ${postFerdPath} ${pdfPath} -c "[ /Title (${path.basename(
+        filename,
+        ".pdf"
+      )}) /DOCINFO pdfmark" -f`
+    )
+    await exec(`mv ${outputFile} ${pdfPath}`)
+
+    // clear previous invoice XML data just in case
+    fse.writeFileSync(ZUGFeRDInvoicePath, "")
+  }
+}
+
+
 module.exports.makeInvoiceFile = async function makeInvoiceFile(payload) {
   const subPrefix = slugify(_.get(payload, "invoiceNumber", ""), "_")
   const $recreate = _.get(payload, "$recreate", false)
-  const $receiver = _.get(payload, "$receiver") || _.get(payload, ["owner", "id"])
+  const $receiver = getReceiver(payload)
   const fixingReferenceId = _.get(payload, "fixingReferenceId")
   const fixingReferenceType = _.get(payload, "fixingReferenceType")
 
@@ -152,9 +186,8 @@ module.exports.makeInvoiceFile = async function makeInvoiceFile(payload) {
   } else {
     // Determine invoice template
     const invoiceTemplateFile = _.trim(_.get(payload, ["data", "template", "label"]))
-    const templateFilePath = getTemplateFilePath(invoiceTemplateFile, defaultUploadFolder)
-    const hasTemplateFile =
-      templateFilePath && fse.lstatSync(templateFilePath).isFile() && fse.existsSync(templateFilePath)
+    const templateFilePath = getTemplateFilePath(invoiceTemplateFile)
+    const hasTemplateFile = checkHasTemplateFile(templateFilePath)
 
     _.set(payload, "data.template.variant", hasTemplateFile ? "docx" : "legacy")
     _.set(payload, "data.template.path", hasTemplateFile ? templateFilePath : null)
@@ -165,8 +198,9 @@ module.exports.makeInvoiceFile = async function makeInvoiceFile(payload) {
     let createPDFresult = await createPDF(
       canCreatePDF,
       payload,
+      {
       fixingReferenceId,
-      fixingReferenceType,
+      fixingReferenceType},
       filename,
       folderPath,
       pdfPath,
@@ -243,33 +277,7 @@ module.exports.makeInvoiceFile = async function makeInvoiceFile(payload) {
         ZUGFeRDPayload = await faktooraUtilities.generateZF2XmlInvoice(values)
         break
       case "zf:1:extended":
-        if (canCreatePDF) {
-          // generate some needed data for XML create process (collect product taxes, discount etc.)
-          const calculateAmount = faktooraUtilities.calculateAmount(
-            _.get(payload, ["data", "invoicePositions"]),
-            _.get(payload, ["data", "totaldiscount", "value"]),
-            _.get(payload, ["data", "deduction"]),
-            _.get(payload, ["data", "subTotalsDefinitions"])
-          )
-
-          // generate the XML data then write to file
-          const zugxml = await faktooraUtilities.generateZF1XmlInvoice(payload, calculateAmount)
-
-          fse.writeFileSync(ZUGFeRDInvoicePath, zugxml)
-
-          // generate PDF/A3 with included XML data
-          const outputFile = `${pdfPath}.tmp`
-          await exec(
-            `gs -dPDFA=3 -dBATCH -dNOPAUSE -dNOSAFER -sColorConversionStrategy=sRGB -sDEVICE=pdfwrite -sOutputFile=${outputFile} ${postFerdPath} ${pdfPath} -c "[ /Title (${path.basename(
-              filename,
-              ".pdf"
-            )}) /DOCINFO pdfmark" -f`
-          )
-          await exec(`mv ${outputFile} ${pdfPath}`)
-
-          // clear previous invoice XML data just in case
-          fse.writeFileSync(ZUGFeRDInvoicePath, "")
-        }
+        generateZF1ExtendedPDF(canCreatePDF, payload, pdfPath)
         break
     }
   } catch (err) {
